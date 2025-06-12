@@ -28,5 +28,5 @@ Busca en la ruta de entrada ficheros CBR, CBZ y PDF, los procesa y los deja en l
 Si se omite la ruta de salida, crea un directorio "salida" en la ruta de entrada.
 El script evita que se procese un fichero 2 veces, si existe en la ruta de salida, no hace nada.
 
-##TODO: 
+## TODO: 
 * Mejorar la documentación xD
