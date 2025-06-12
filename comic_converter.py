@@ -141,29 +141,35 @@ def convertir_pdf(pdf: Path, temp_dir: Path, archivo: Path) -> bool:
         mostrar_progreso(archivo, "ERROR", f"Error PDF: {e}", color_etapa=color_final)
         return False
 
-def procesar_imagen(imagen: Path, archivo_origen: Path) -> bool:
+def procesar_imagen(imagen: Path, archivo_origen: Path, destino_final: Path) -> bool:
     """Convierte una imagen a WebP con las configuraciones adecuadas"""
     try:
-        # Eliminar imagen si está vacía (0 bytes)
         if imagen.stat().st_size == 0:
             mostrar_progreso(imagen, "AVISO", "Eliminada imagen de 0 bytes", Colors.AMARILLO)
             imagen.unlink(missing_ok=True)
             return False
+
         result = subprocess.run(['identify', '-format', '%w %h', str(imagen)], 
                                capture_output=True, text=True, check=True)
         ancho, alto = map(int, result.stdout.strip().split())
         resize = []
         if ancho > CONFIG['ANCHO_MAXIMO'] or alto > CONFIG['ALTO_MAXIMO']:
             resize = ['-resize', f"{CONFIG['ANCHO_MAXIMO']}x{CONFIG['ALTO_MAXIMO']}>"]
-        output_path = imagen.parent / f"cc_{imagen.stem}.webp"
+
+        # Asegurar carpeta destino
+        destino_final.mkdir(parents=True, exist_ok=True)
+        output_path = destino_final / f"{imagen.stem}.webp"
+
         cmd = ['convert', str(imagen), '-format', 'webp', '-quality', str(CONFIG['CALIDAD_WEBP'])] + resize + [str(output_path)]
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
         imagen.unlink()
         return True
+
     except (subprocess.CalledProcessError, ValueError) as e:
-        color_final = Colors.ROJO
-        mostrar_progreso(archivo_origen, "ERROR", f"Error imagen: {e}", color_etapa=color_final)
+        mostrar_progreso(archivo_origen, "ERROR", f"Error imagen: {e}", color_etapa=Colors.ROJO)
         return False
+
 
 def crear_estructura_salida(archivo_entrada: Path) -> Path:
     """Crea la estructura de directorios de salida manteniendo la jerarquía"""
@@ -203,16 +209,31 @@ def procesar_archivo(archivo: Path) -> bool:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL
                 )
+                archivo_a_extraer = archivo
+
                 if test_result.returncode != 0:
-                    color_final = Colors.ROJO
-                    mostrar_progreso(archivo, "ERROR", "Archivo corrupto o ilegible con 7z", color_etapa=color_final)
-                    return False
+                    mostrar_progreso(archivo, "REPARAR", "Intentando reparar con zip -FF...", Colors.AMARILLO)
+                    archivo_reparado = temp_dir_path / f"{archivo.stem}_reparado.zip"
+                    try:
+                        reparacion = subprocess.run(
+                            ['zip', '-FF', str(archivo), '--out', str(archivo_reparado)],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            check=True
+                        )
+                        archivo_a_extraer = archivo_reparado
+                        mostrar_progreso(archivo, "REPARADO", "Archivo reparado correctamente", Colors.VERDE)
+                    except subprocess.CalledProcessError:
+                        mostrar_progreso(archivo, "ERROR", "No se pudo reparar el archivo ZIP", Colors.ROJO)
+                        return False
+                
                 # Copiar archivo a nombre temporal seguro
                 tmp_archivos_dir = temp_dir_path / "_seguro"
                 tmp_archivos_dir.mkdir(parents=True, exist_ok=True)
                 nombre_seguro = f"tempfile_{os.getpid()}.cbz"
                 ruta_segura = tmp_archivos_dir / nombre_seguro
-                shutil.copy2(archivo, ruta_segura)
+                shutil.copy2(archivo_a_extraer, ruta_segura)
+
                 # Extraer desde la ruta temporal
                 subprocess.run(
                     ['7z', 'x', '-y', f'-o{temp_dir_path}', str(ruta_segura)],
@@ -256,6 +277,7 @@ def procesar_archivo(archivo: Path) -> bool:
             desc_barra = f"{nombre_barra}"  # sin emoji ni ANSI
             #nombre_barra = f"🖼 {nombre}".ljust(ancho_desc)
             total_imagenes = len(imagenes)
+            carpeta_convertidas = temp_dir_path / "_webpconvert"
             # Mostrar barra de imágenes con nombre recortado
             for img in tqdm(
                 imagenes,
@@ -265,7 +287,10 @@ def procesar_archivo(archivo: Path) -> bool:
                 colour="cyan",
                 leave=False
             ):
-                procesar_imagen(img, archivo)
+                if img.suffix.lower() == ".webp":
+                    procesar_imagen(img, archivo, carpeta_convertidas)
+                else:
+                    procesar_imagen(img, archivo, img.parent)
             # Limpiar nombres con espacios al principio/final (archivos y carpetas)
             for path in sorted(temp_dir_path.rglob('*'), key=lambda p: -len(p.parts)):
                 nombre_limpio = path.name.strip()
@@ -274,9 +299,12 @@ def procesar_archivo(archivo: Path) -> bool:
                     if not nuevo_path.exists():
                         path.rename(nuevo_path)
             # Comprimir a CBZ
+            # Usar carpeta de imágenes convertidas si existe
+            origen_cbz = carpeta_convertidas if carpeta_convertidas.exists() else temp_dir_path
+
             archivos_a_comprimir = [
                 f.relative_to(temp_dir_path)
-                for f in temp_dir_path.rglob('*')
+                for f in origen_cbz.rglob('*')
                 if f.is_file() and "_seguro" not in str(f)
             ]
             if archivos_a_comprimir:
