@@ -210,7 +210,6 @@ def procesar_archivo(archivo: Path) -> bool:
                     stderr=subprocess.DEVNULL
                 )
                 archivo_a_extraer = archivo
-
                 if test_result.returncode != 0:
                     mostrar_progreso(archivo, "REPARAR", "Intentando reparar con zip -FF...", Colors.AMARILLO)
                     archivo_reparado = temp_dir_path / f"{archivo.stem}_reparado.zip"
@@ -253,6 +252,9 @@ def procesar_archivo(archivo: Path) -> bool:
                 color_final = Colors.ROJO
                 mostrar_progreso(archivo, "ERROR", "Tipo no soportado", color_etapa=color_final)
                 return False
+            # Guardar ruta absoluta si existe ComicInfo.xml
+            comicinfo_path = next(temp_dir_path.rglob("ComicInfo.xml"), None)
+
             limpiar_directorio(temp_dir_path)
             # Procesar todas las imágenes encontradas
             imagenes = []
@@ -287,10 +289,9 @@ def procesar_archivo(archivo: Path) -> bool:
                 colour="cyan",
                 leave=False
             ):
-                if img.suffix.lower() == ".webp":
-                    procesar_imagen(img, archivo, carpeta_convertidas)
-                else:
-                    procesar_imagen(img, archivo, img.parent)
+                ruta_relativa = img.relative_to(temp_dir_path)
+                destino_img = carpeta_convertidas / ruta_relativa.parent
+                procesar_imagen(img, archivo, destino_img)
             # Limpiar nombres con espacios al principio/final (archivos y carpetas)
             for path in sorted(temp_dir_path.rglob('*'), key=lambda p: -len(p.parts)):
                 nombre_limpio = path.name.strip()
@@ -300,18 +301,24 @@ def procesar_archivo(archivo: Path) -> bool:
                         path.rename(nuevo_path)
             # Comprimir a CBZ
             # Usar carpeta de imágenes convertidas si existe
-            origen_cbz = carpeta_convertidas if carpeta_convertidas.exists() else temp_dir_path
-
+            # Usar la raíz real de extracción como base
+            base_para_cbz = carpeta_convertidas if carpeta_convertidas.exists() else temp_dir_path
+            # Copiar ComicInfo.xml si existe
+            if comicinfo_path and comicinfo_path.is_file():
+                destino_comicinfo = carpeta_convertidas / comicinfo_path.relative_to(temp_dir_path).parent
+                destino_comicinfo.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(comicinfo_path, destino_comicinfo)
+            # Obtener todas las rutas relativas desde base_para_cbz
             archivos_a_comprimir = [
-                f.relative_to(temp_dir_path)
-                for f in origen_cbz.rglob('*')
-                if f.is_file() and "_seguro" not in str(f)
+                f.relative_to(carpeta_convertidas)
+                for f in carpeta_convertidas.rglob('*')
+                if f.is_file()
             ]
             if archivos_a_comprimir:
                 cmd = ['7z', 'a'] + CONFIG['COMPRESION_CBZ'] + [str(archivo_salida)] + [str(f) for f in archivos_a_comprimir]
                 subprocess.run(
                     cmd,
-                    cwd=temp_dir_path,  # <- esto es obligatorio
+                    cwd=carpeta_convertidas,  # <- esto es obligatorio
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     check=True
